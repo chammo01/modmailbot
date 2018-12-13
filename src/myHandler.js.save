@@ -1,0 +1,185 @@
+\const config = require('./config');
+const knex = require('knex')(config.knex);
+const bot = require('./bot');
+
+module.exports.dropOldAcc = async () => {
+  console.log("Dropping off old messages");
+  let table = await knex('raid').select();
+
+  for(let i = 0; i < table.length; i++) {
+    if(table[i].time < Date.now()-432000000)
+      knex('raid').where('msg_id', table[i].msg_id).delete();
+  }
+};
+
+module.exports.customs = async (msg) => {
+  if(msg.author.bot) return;
+
+  let raidFlag = await knex('myConf').where('name', "flag").first();
+
+  if(raidFlag.value == "true" && msg.member && msg.channel.id != "322412160888078336"//ensure guild has this module enabled
+    && ((new Date(msg.member.joinedAt)).getTime() > (Date.now()-432000000)) //joined more recently than 5 days
+    && (msg.member.user.createdAt > (Date.now()-432000000))) { //account created more recently than 5 days
+
+    await knex('raid').insert({
+      author_id: msg.author.id,
+      msg_id: msg.id,
+      msg_cont: msg.content,
+      time: msg.createdAt
+    });
+
+    let raider = await knex('raid').where('author_id', msg.author.id);
+
+    if(raider.length > 2) //only store 3 most recent messages (idk why it has to be 2)
+      await knex('raid').where('msg_id', raider[0].msg_id).delete();
+
+    if(raider.length == 3 && msg.attachments.length == 0) { //only check for matches from users who have sent more than 3 messages
+      let flag  = false;
+
+      for(let i = 0; i < 3; i++) {
+//console.log(raider, raider[i]);
+        if(raider[i].msg_cont != msg.content //check for all messages being the same
+          || raider[i].time < (Date.now() - 1800000)) //ensure all messages are newer than 30min
+          flag = true;
+      }
+      if(flag)
+        return;
+
+      for(let i = 0; i < 3; i++) { //delete all messages
+        msg.channel.getMessage(raider[i].msg_id)
+          .then(m => { m.delete(); });
+      }
+      let roleToAssign = await knex('myConf').where('name', "role").first();
+      msg.member.addRole(roleToAssign.value); //assign role when considered raiding
+
+      const alert = await knex('myConf').where('name', "alert_chan").first();
+
+      let toSend = "Possible raid attempt: <@" + msg.author.id + ">\n"
+        + msg.content;
+      if(toSend.length > 1990)
+        toSend = toSend.slice(1990);
+      bot.createMessage(alert.value, toSend); //Channel to send raid alerts to
+
+      await knex('raid').where('author_id', msg.author.id).delete(); //Clear user's raid obj
+    }
+  }
+
+  if(!msg.member.roles)
+    return;
+  if(!msg.member.roles.includes("385619612131262464") //The High Council
+    && msg.author.id != 239261547959025665) //Chase's ID
+    return;
+
+  //List mods
+  if(msg.content == "!mods"
+    && (msg.channel.parentID == "360553187142402048" //Staff category
+    || msg.channel.id == "470438346167156736")) { //Test channel
+    let arr = msg.channel.guild.members.filter(i => i.roles.includes('293134211270049793') //Mods ID
+      &&  !i.roles.includes('348669285171724290')).map(i => i.id); //Admins ID
+
+    let toSend = "";
+    for(let i = 0; i < arr.length; i++)
+      toSend += "<@" + arr[i] + ">\n";
+
+    let embed =  {
+      "embed": {
+        "timestamp": (new Date()).toISOString(),
+        "color": !ebal ,
+        "author": {
+          "name": "LB Moderators"
+        },
+        "description": toSend
+      }
+    }
+
+    bot.createMessage(msg.channel.id, embed);
+  }
+
+
+  //Config options
+  if(msg.content.startsWith("!antiraid")
+    && msg.member.roles
+    && (msg.member.roles.includes("385619612131262464") //The High Council
+    || msg.author.id == 239261547959025665)) //Chase's ID
+    myConfig(msg, raidFlag);
+
+  //Eval
+  if(msg.author.id != "239261547959025665")
+    return;
+  if(!msg.content.startsWith("!eval"))
+    return;
+
+  const args = msg.content.split(" ").slice(1);
+
+  try {
+    const code = args.join(" ");
+    let evaled = await eval(code);
+
+    if (typeof evaled !== "string")
+      evaled = require("util").inspect(evaled, {depth:1});
+
+    bot.createMessage(msg.channel.id, "```js\n" + clean(evaled) + "```");
+  } catch (err) {
+    bot.createMessage(msg.channel.id, `\`ERROR\` \`\`\`xl\n${clean(err)}\n\`\`\``);
+  }
+
+};
+
+//Antiraid options support
+async function myConfig(msg, raidFlag) {
+  let toSend = null;
+  //LB anti-raid toggle
+  if(msg.content == "!antiraid"
+    && (msg.channel.parentID == "360553187142402048" //Staff category
+    || msg.channel.id == "470438346167156736")) { //Test channel
+
+    if(raidFlag.value == "true")
+      await knex('myConf').where('name', "flag").update('value', "false");
+    else
+      await knex('myConf').where('name', "flag").update('value', "true");
+
+    const newFlag = await knex('myConf').where('name', "flag").first();
+    toSend = "**" + msg.member.user.username + "** (" + msg.author.id
+      + ") set antiraid to: " + newFlag.value;
+    bot.createMessage(msg.channel.id, toSend);
+  }
+  else if(msg.content.startsWith("!antiraid role")) {
+
+    const newRole = msg.content.split("role")[1].trim();
+
+    if(msg.channel.guild.roles.map(m => m.id).includes(newRole)) {
+      knex('myConf').where('name', "role").update('value', newRole);
+
+      toSend = "**" + msg.member.user.username + "** (" + msg.author.id
+        + ") set the antiraid role to: <@&" + newRole + "> (" + newRole + ")";
+    }
+    else
+      toSend = "*Failed:* Enter a valid role ID.";
+
+    bot.createMessage(msg.channel.id, toSend);
+  }
+  else if(msg.content.startsWith("!antiraid alert")) {
+
+    const alertChan = msg.content.split("alert")[1].trim();
+
+    if(msg.channel.guild.channels.map(c => c.id).includes(alertChan)) {
+      await knex('myConf').where('name', "alert_chan").update('value', alertChan);
+
+      toSend = "**" + msg.member.user.username + "** (" + msg.author.id
+        + ") set the antiraid alert channel to: <#"
+        + alertChan + "> (" + alertChan + ")";
+    }
+    else
+      toSend = "*Failed:* Enter a valid channel ID.";
+
+    bot.createMessage(msg.channel.id, toSend);
+  }
+};
+
+//Eval support
+function clean(text) {
+  if (typeof(text) === "string")
+    return text.replace(/`/g, "`" + String.fromCharCode(8203)).replace(/@/g, "@" + String.fromCharCode(8203));
+  else
+      return text;
+};
